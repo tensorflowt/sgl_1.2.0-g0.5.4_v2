@@ -9,7 +9,8 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
-use tracing::debug;
+use tracing::{debug, info};
+
 
 use super::{context::SharedComponents, pipeline::RequestPipeline};
 use crate::{
@@ -53,6 +54,7 @@ pub struct GrpcPDRouter {
 impl GrpcPDRouter {
     /// Create a new gRPC PD router
     pub async fn new(ctx: &Arc<AppContext>) -> Result<Self, String> {
+        info!("Starting GrpcPDRouter new...");
         // Get registries from context
         let worker_registry = ctx.worker_registry.clone();
         let policy_registry = ctx.policy_registry.clone();
@@ -74,6 +76,7 @@ impl GrpcPDRouter {
             .ok_or_else(|| "gRPC PD router requires tool parser factory".to_string())?
             .clone();
 
+        info!("Creating shared components...");
         // Create shared components for pipeline
         let shared_components = Arc::new(SharedComponents {
             tokenizer: tokenizer.clone(),
@@ -81,6 +84,7 @@ impl GrpcPDRouter {
             reasoning_parser_factory: reasoning_parser_factory.clone(),
         });
 
+        info!("Creating PD pipeline...");
         // Create PD pipeline
         let pipeline = RequestPipeline::new_pd(
             worker_registry.clone(),
@@ -92,11 +96,13 @@ impl GrpcPDRouter {
             ctx.configured_reasoning_parser.clone(),
         );
 
+        info!("Starting cache sync...");
         // 启动缓存同步  
         let prefill_policy = policy_registry.get_prefill_policy(); 
+        info!("Starting cache sync with prefill_policy: {:?}", prefill_policy);
         // 尝试将其转换为 CacheAwarePolicy  
         if let Some(cache_aware) = prefill_policy.as_any().downcast_ref::<CacheAwarePolicy>() {  
-            // 检查是否启用了缓存同步  
+            // 检查是否启用了缓存同步 
             if cache_aware.is_cache_sync_enabled() { 
                 // 获取第一个 prefill worker URL  
                 let prefill_workers = worker_registry.get_workers_filtered(  
@@ -107,14 +113,14 @@ impl GrpcPDRouter {
                 );  
                   
                 if let Some(worker) = prefill_workers.first() {  
-                    tracing::info!(  
-                        "Cache sync is enabled for worker {} with interval {} seconds",  
-                        worker.url(),  
-                        cache_aware.sync_interval_secs()  
-                    );  
+                    cache_aware.start_cache_sync(  
+                    worker.url().to_string(),  
+                    tokenizer.clone()  
+                );    
                 }  
             }  
         }
+        info!("GrpcPDRouter created successfully.");
         
         Ok(GrpcPDRouter {
             worker_registry,

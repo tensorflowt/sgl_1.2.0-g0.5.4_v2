@@ -63,7 +63,7 @@ use std::{sync::Arc, thread, time::Duration};
 
 use dashmap::DashMap;
 use rand::Rng;
-use tracing::debug;
+use tracing::{debug, info};
 
 use super::{get_healthy_worker_indices, CacheAwareConfig, LoadBalancingPolicy};
 use crate::{core::Worker, metrics::RouterMetrics, tree::Tree};
@@ -71,6 +71,8 @@ use crate::{core::Worker, metrics::RouterMetrics, tree::Tree};
 use serde::{Deserialize, Serialize};  
 use tokio::task::JoinHandle;  
 use crate::tokenizer::traits::Tokenizer;
+
+use std::sync::RwLock;
 
 // 添加响应数据结构  
 #[derive(Debug, Deserialize, Serialize)]  
@@ -100,7 +102,7 @@ pub struct CacheAwarePolicy {
     config: CacheAwareConfig,
     trees: Arc<DashMap<String, Arc<Tree>>>,
     eviction_handle: Option<thread::JoinHandle<()>>,
-    sync_handle: Option<JoinHandle<()>>,
+    sync_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
 }
 
 impl CacheAwarePolicy {
@@ -139,7 +141,7 @@ impl CacheAwarePolicy {
             config,
             trees,
             eviction_handle,
-            sync_handle: None,
+            sync_handle: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -170,16 +172,16 @@ impl CacheAwarePolicy {
 
     /// 启动缓存同步任务 (仅在 enable_cache_sync 为 true 时调用) 
     pub fn start_cache_sync(  
-        &mut self,  
+        &self,  
         prefill_worker_url: String,  
         tokenizer: Arc<dyn Tokenizer>,  
     ) {
-        tracing::info!("Starting cache sync task 1...");
+        info!("Starting cache sync task 1...");
         if !self.config.enable_cache_sync {  
             debug!("Cache sync is disabled, skipping sync task initialization");  
             return;  
         }    
-        tracing::info!("Starting cache sync task 2...");
+        info!("Starting cache sync task 2...");
         let trees = Arc::clone(&self.trees);  
         let sync_interval_secs = self.config.sync_interval_secs;  
           
@@ -228,7 +230,7 @@ impl CacheAwarePolicy {
             }  
         });  
           
-        self.sync_handle = Some(handle); 
+        *self.sync_handle.write().unwrap() = Some(handle); 
         tracing::info!(  
             "Cache sync enabled for worker {} with interval {} seconds",  
             worker_url_for_log,  
@@ -401,8 +403,10 @@ impl Drop for CacheAwarePolicy {
             drop(handle);  
         }  
           
-        if let Some(handle) = self.sync_handle.take() {  
-            handle.abort();  
+        if let Ok(mut guard) = self.sync_handle.write() {  
+            if let Some(handle) = guard.take() {  
+                handle.abort();  
+            }  
         }  
     }  
 }
